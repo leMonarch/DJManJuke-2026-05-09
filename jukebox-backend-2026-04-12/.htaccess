@@ -1,0 +1,63 @@
+# DO NOT REMOVE. CLOUDLINUX PASSENGER CONFIGURATION BEGIN
+PassengerAppRoot "/home/djmawdrx/public_html/api"
+PassengerBaseURI "/api"
+PassengerNodejs "/home/djmawdrx/nodevenv/public_html/api/20/bin/node"
+PassengerAppType node
+PassengerStartupFile src/server.js
+# DO NOT REMOVE. CLOUDLINUX PASSENGER CONFIGURATION END
+RewriteEngine On
+# IMPORTANT: Les règles WebSocket doivent être AVANT les règles Passenger
+# Le backend écoute sur /api/socket.io, donc on doit router vers /api/socket.io
+# WebSocket pour /api/socket.io/ (routage direct vers Node.js)
+RewriteCond %{HTTP:Upgrade} =websocket [NC]
+RewriteCond %{REQUEST_URI} ^/api/socket\.io
+RewriteRule ^api/socket\.io(.*)$ ws://127.0.0.1:4000/api/socket.io$1 [P,L]
+# WebSocket pour /api/ws/ (namespace /ws/jukebox)
+RewriteCond %{HTTP:Upgrade} =websocket [NC]
+RewriteCond %{REQUEST_URI} ^/api/ws
+RewriteRule ^api/ws(.*)$ ws://127.0.0.1:4000/api/ws$1 [P,L]
+# Activer mod_proxy pour WebSockets
+<IfModule mod_proxy.c>
+  ProxyPreserveHost On
+  ProxyRequests Off
+  # Proxy pour /api/socket.io
+  ProxyPassMatch ^/api/socket\.io ws://127.0.0.1:4000/api/socket.io
+  # Proxy pour /api/ws/ (namespace)
+  ProxyPassMatch ^/api/ws/ ws://127.0.0.1:4000/api/ws/
+</IfModule>
+# HTTP (polling) pour /api/socket.io/ (Passenger gère déjà via PassengerBaseURI)
+# Les requêtes HTTP vers /api/socket.io sont automatiquement routées par Passenger
+# Router /assets/ vers Express (si les assets ne sont pas servis directement par Apache)
+# Les assets sont servis par Express via app.use('/media/images', ...) et app.use('/media/audio', ...)
+# Avec PassengerBaseURI "/api", les assets sont accessibles via /api/media/...
+# Mais Express sert aussi directement /media/... donc on peut router /media/ vers /api/media/
+RewriteCond %{REQUEST_URI} ^/media/
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^media/(.*)$ /api/media/$1 [L,P]
+# DO NOT REMOVE OR MODIFY. CLOUDLINUX ENV VARS CONFIGURATION BEGIN
+<IfModule Litespeed>
+SetEnv ANONYMOUS_PAYER_EMAIL djmanjuke@placejukebox.dev
+SetEnv APP_BASE_URL https://djmanjuke.com
+SetEnv DB_HOST localhost
+SetEnv DB_NAME djmawdrx_djman
+SetEnv DB_PASSWORD Diffusio_25$
+SetEnv DB_PORT 3306
+SetEnv DB_USER djmawdrx_louis
+SetEnv JWT_SECRET temp-jwt-secret-change-later
+SetEnv MIN_PAYOUT_AMOUNT 5
+SetEnv NODE_ENV development
+SetEnv PLATFORM_USER_EMAIL louis.lemonarch@gmail.com
+SetEnv PORT 4000
+SetEnv SESSION_SECRET temp-dev-secret-change-later
+SetEnv STRIPE_CONNECT_CLIENT_ID 
+SetEnv STRIPE_CONNECT_DEFAULT_COUNTRY CA
+SetEnv STRIPE_DEFAULT_CURRENCY cad
+SetEnv STRIPE_PLATFORM_ACCOUNT_ID 
+SetEnv STRIPE_PRO_PRICE_ID price_1SBzzHP9TcVVYrcot50KwBM9
+SetEnv STRIPE_SECRET_KEY sk_test_VOTRE_CLE_SECRETE_ICI
+SetEnv STRIPE_WEBHOOK_SECRET whsec_placeholder
+SetEnv CLIENT_ORIGINS https://djman-mini-prod-97fe.vercel.app,https://djmanjuke.com,http://localhost:5173
+SetEnv CLIENT_URL https://djman-mini-prod-97fe.vercel.app
+</IfModule>
+# DO NOT REMOVE OR MODIFY. CLOUDLINUX ENV VARS CONFIGURATION END

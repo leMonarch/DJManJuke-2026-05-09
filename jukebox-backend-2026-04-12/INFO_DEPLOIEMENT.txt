@@ -1,0 +1,62 @@
+═══════════════════════════════════════════════════════════════
+  BACKEND PRODUCTION - DJMANJUKE.COM
+═══════════════════════════════════════════════════════════════
+
+📦 FICHIER ZIP : backend-production.zip
+📁 TAILLE : ~221 MB (inclut les assets audio/vidéo)
+🌐 DOMAINE : https://djmanjuke.com
+
+═══════════════════════════════════════════════════════════════
+  CONTENU DU PACKAGE
+═══════════════════════════════════════════════════════════════
+
+✅ Code source complet (src/)
+✅ Configuration production (.env.production.txt)
+✅ Documentation complète (README_DEPLOIEMENT.md)
+✅ Guide d'installation (INSTALLATION.md)
+✅ Démarrage rapide (QUICK_START.md)
+✅ package.json avec toutes les dépendances
+
+═══════════════════════════════════════════════════════════════
+  URLS DE PRODUCTION CONFIGURÉES
+═══════════════════════════════════════════════════════════════
+
+API Base          : https://djmanjuke.com/api
+Socket.io         : https://djmanjuke.com/api/socket.io
+Webhook Stripe    : https://djmanjuke.com/api/payment/webhook
+Assets Images     : https://djmanjuke.com/api/assets/images/
+Assets Audio      : https://djmanjuke.com/api/assets/audio/
+
+═══════════════════════════════════════════════════════════════
+  ÉTAPES DE DÉPLOIEMENT
+═══════════════════════════════════════════════════════════════
+
+1. Décompressez backend-production.zip
+2. Uploadez tout dans public_html/api/
+3. Renommez env.production.txt en .env
+4. Configurez .env (voir README_DEPLOIEMENT.md)
+5. npm install --production
+6. Exécutez src/db/schema.sql dans phpMyAdmin
+7. Démarrez via Node.js Selector ou Terminal
+
+═══════════════════════════════════════════════════════════════
+  DOCUMENTATION
+═══════════════════════════════════════════════════════════════
+
+📖 README_DEPLOIEMENT.md  → Guide complet de déploiement
+⚡ QUICK_START.md         → Démarrage rapide (5 min)
+📁 STRUCTURE.md           → Structure des fichiers
+🔧 INSTALLATION.md        → Checklist d'installation
+
+═══════════════════════════════════════════════════════════════
+  IMPORTANT
+═══════════════════════════════════════════════════════════════
+
+⚠️  Générez SESSION_SECRET et JWT_SECRET avant le déploiement
+⚠️  Configurez la base de données MySQL dans cPanel
+⚠️  Configurez le webhook Stripe après le déploiement
+⚠️  Vérifiez que toutes les URLs pointent vers djmanjuke.com
+
+═══════════════════════════════════════════════════════════════
+
+
