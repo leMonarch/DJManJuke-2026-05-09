@@ -255,6 +255,59 @@ const normalizeQueueOrdering = async (slug, options = {}) => {
   }
 };
 
+/**
+ * Met à jour jukeboxes.current_song_id, playback_started_at, playback_status selon la tête de file.
+ * ENUM playback_status : seulement 'playing' | 'paused' en base ; file vide → paused + IDs null (idle).
+ *
+ * @param {string} slug
+ * @param {{ source: 'skip'|'prioritize'|'addToEmptyQueue'|'complete', completedSongId?: number|null, playlist?: unknown[] }} opts
+ * @returns {Promise<{ song: object|null, playback_started_at: number|null, transitioned: boolean }>}
+ */
+const startPlaybackForQueueHead = async (slug, opts = {}) => {
+  const { source, completedSongId = null, playlist: playlistOpt = null } = opts;
+  const playlist = playlistOpt ?? (await getPlaylist(slug));
+  const jukebox = await getJukeboxBySlug(slug);
+  const head = playlist?.length ? playlist[0] : null;
+
+  // eslint-disable-next-line no-console
+  console.log('[playbackTransition]', { source, slug, headSongId: head?.id ?? null });
+
+  if (!head) {
+    await pool.query(
+      'UPDATE jukeboxes SET current_song_id = NULL, playback_started_at = NULL, playback_status = ? WHERE id = ?',
+      ['paused', jukebox.id],
+    );
+    return { song: null, playback_started_at: null, transitioned: true };
+  }
+
+  // completeSong : la piste complétée reste en tête → pause sans nouveau playback:start (inchangé vs ancien comportement)
+  if (completedSongId != null && Number(head.id) === Number(completedSongId)) {
+    await pool.query('UPDATE jukeboxes SET playback_status = ? WHERE id = ?', ['paused', jukebox.id]);
+    return {
+      song: head,
+      playback_started_at: jukebox.playback_started_at != null ? Number(jukebox.playback_started_at) : null,
+      transitioned: false,
+    };
+  }
+
+  const currentId = jukebox.current_song_id != null ? Number(jukebox.current_song_id) : null;
+  const headId = Number(head.id);
+  if (currentId === headId && jukebox.playback_status === 'playing') {
+    return {
+      song: head,
+      playback_started_at: jukebox.playback_started_at != null ? Number(jukebox.playback_started_at) : null,
+      transitioned: false,
+    };
+  }
+
+  const startedAt = Date.now();
+  await pool.query(
+    'UPDATE jukeboxes SET current_song_id = ?, playback_started_at = ?, playback_status = ? WHERE id = ?',
+    [headId, startedAt, 'playing', jukebox.id],
+  );
+  return { song: head, playback_started_at: startedAt, transitioned: true };
+};
+
 const getCatalogForUser = async (slug, user) => {
   const jukebox = await getJukeboxBySlug(slug);
   ensureJukeboxAccess(user, jukebox);
@@ -339,14 +392,30 @@ const listJukeboxLocations = async (slug) => {
 
 const addSongToJukebox = async (slug, songId, user) => {
   const { jukebox } = await getCatalogForUser(slug, user);
+  const [[countRow]] = await pool.query(
+    'SELECT COUNT(*) AS c FROM jukebox_songs WHERE jukebox_id = ?',
+    [jukebox.id],
+  );
+  const wasEmpty = Number(countRow?.c ?? 0) === 0;
+
   await addSongToJukeboxById(jukebox.id, songId);
   await normalizeQueueOrdering(slug);
   const songs = await fetchCatalogSongs(jukebox.id);
-  
-  // Émettre un événement WebSocket pour notifier tous les clients de la mise à jour de la playlist
+
   const playlist = await getPlaylist(slug);
+  let playback = { song: null, playback_started_at: null, transitioned: false };
+  if (wasEmpty) {
+    playback = await startPlaybackForQueueHead(slug, { source: 'addToEmptyQueue', playlist });
+  }
   emitQueueUpdate({ slug, playlist });
-  
+  if (playback.transitioned && playback.song) {
+    emitPlaybackStart({
+      slug,
+      track: playback.song,
+      startedAt: playback.playback_started_at,
+    });
+  }
+
   return songs;
 };
 
@@ -415,7 +484,15 @@ const prioritizeSong = async (slug, songId, amount = 0.5, currentSongId = null, 
 
   await normalizeQueueOrdering(slug, { currentSongId });
   const playlist = await getPlaylist(slug);
+  const playback = await startPlaybackForQueueHead(slug, { source: 'prioritize', playlist });
   emitQueueUpdate({ slug, playlist });
+  if (playback.transitioned && playback.song) {
+    emitPlaybackStart({
+      slug,
+      track: playback.song,
+      startedAt: playback.playback_started_at,
+    });
+  }
   return playlist;
 };
 
@@ -446,22 +523,15 @@ const skipToNext = async ({ slug, user }) => {
   }
 
   const updated = await getPlaylist(slug);
-  const activeTrack = updated?.[0] ?? null;
-  if (activeTrack) {
-    const startedAt = Date.now();
-    const jukebox = await getJukeboxBySlug(slug);
-    // Stocker l'état de lecture en base de données
-    await pool.query(
-      'UPDATE jukeboxes SET current_song_id = ?, playback_started_at = ?, playback_status = ? WHERE id = ?',
-      [activeTrack.id, startedAt, 'playing', jukebox.id]
-    );
+  const playback = await startPlaybackForQueueHead(slug, { source: 'skip', playlist: updated });
+  emitQueueUpdate({ slug, playlist: updated });
+  if (playback.transitioned && playback.song) {
     emitPlaybackStart({
       slug,
-      track: activeTrack,
-      startedAt,
+      track: playback.song,
+      startedAt: playback.playback_started_at,
     });
   }
-  emitQueueUpdate({ slug, playlist: updated });
   return updated;
 };
 
@@ -492,22 +562,15 @@ const skipToPrevious = async ({ slug, user }) => {
   }
 
   const updated = await getPlaylist(slug);
-  const activeTrack = updated?.[0] ?? null;
-  if (activeTrack) {
-    const startedAt = Date.now();
-    const jukebox = await getJukeboxBySlug(slug);
-    // Stocker l'état de lecture en base de données
-    await pool.query(
-      'UPDATE jukeboxes SET current_song_id = ?, playback_started_at = ?, playback_status = ? WHERE id = ?',
-      [activeTrack.id, startedAt, 'playing', jukebox.id]
-    );
+  const playback = await startPlaybackForQueueHead(slug, { source: 'skip', playlist: updated });
+  emitQueueUpdate({ slug, playlist: updated });
+  if (playback.transitioned && playback.song) {
     emitPlaybackStart({
       slug,
-      track: activeTrack,
-      startedAt,
+      track: playback.song,
+      startedAt: playback.playback_started_at,
     });
   }
-  emitQueueUpdate({ slug, playlist: updated });
   return updated;
 };
 
@@ -620,33 +683,19 @@ const completeSong = async (slug, songId, currentSongId = null) => {
 
   await normalizeQueueOrdering(slug, { currentSongId, completedSongId: songId });
   const playlist = await getPlaylist(slug);
-  const activeTrack = playlist?.length ? playlist[0] : null;
-  // On ne déclenche la lecture automatique que si la prochaine piste
-  // est différente de celle qui vient d'être complétée. Cela évite
-  // qu'une chanson rejoue immédiatement deux fois de suite lorsqu'elle
-  // est la seule ou qu'elle reste en tête de file.
-  if (activeTrack && Number(activeTrack.id) !== Number(songId)) {
-    const startedAt = Date.now();
-    const jukebox = await getJukeboxBySlug(slug);
-    // Stocker l'état de lecture en base de données
-    await pool.query(
-      'UPDATE jukeboxes SET current_song_id = ?, playback_started_at = ?, playback_status = ? WHERE id = ?',
-      [activeTrack.id, startedAt, 'playing', jukebox.id]
-    );
+  const playback = await startPlaybackForQueueHead(slug, {
+    source: 'complete',
+    completedSongId: songId,
+    playlist,
+  });
+  emitQueueUpdate({ slug, playlist });
+  if (playback.transitioned && playback.song) {
     emitPlaybackStart({
       slug,
-      track: activeTrack,
-      startedAt,
+      track: playback.song,
+      startedAt: playback.playback_started_at,
     });
-  } else {
-    // Si aucune nouvelle chanson ne démarre, mettre à jour le statut à paused
-    const jukebox = await getJukeboxBySlug(slug);
-    await pool.query(
-      'UPDATE jukeboxes SET playback_status = ? WHERE id = ?',
-      ['paused', jukebox.id]
-    );
   }
-  emitQueueUpdate({ slug, playlist });
   return playlist;
 };
 

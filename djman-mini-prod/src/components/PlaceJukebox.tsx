@@ -31,7 +31,6 @@ const ProductAny: any = Product;
 
 export const PlaceJukebox = ({ slug, hideInterface = false }: PlaceJukeboxProps) => {
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const nextAudioRef = useRef<HTMLAudioElement | null>(null);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const previewTimeoutRef = useRef<number | null>(null);
   const resumeTimeRef = useRef<number>(0);
@@ -44,8 +43,6 @@ export const PlaceJukebox = ({ slug, hideInterface = false }: PlaceJukeboxProps)
   const hasAutoStartedRef = useRef<boolean>(false);
   const autoplayRetryTimeoutRef = useRef<number | null>(null);
   const socketRef = useRef<Socket | null>(null);
-  const crossFadeTimeoutRef = useRef<number | null>(null);
-  const isCrossFadingRef = useRef<boolean>(false);
   // Refs pour éviter les problèmes de closure dans les handlers WebSocket
   const playbackModeRef = useRef<'public' | 'private'>('private');
   const isMasterDeviceRef = useRef<boolean>(false);
@@ -61,8 +58,15 @@ export const PlaceJukebox = ({ slug, hideInterface = false }: PlaceJukeboxProps)
   const serverOffsetRef = useRef<number>(0); // Offset serveur pour compensation de latence
   const isAggressiveModeRef = useRef<boolean>(false);
   const stableSinceRef = useRef<number>(Date.now());
-  
-  
+  /** Seek serveur à appliquer quand `src` / métadonnées sont prêts (évite un `load()` qui remet la tête à 0). */
+  const pendingPlaybackSyncRef = useRef<{ trackId: number; startedAt: number } | null>(null);
+  /** Horodatage mural : fenêtre sans hard-seek agressif au démarrage (évite l’effet « redémarrage » ~0,5 s). */
+  const playbackSyncGraceWallRef = useRef<number>(0);
+
+  const markPlaybackSyncGrace = useCallback(() => {
+    playbackSyncGraceWallRef.current = Date.now();
+  }, []);
+
   // Écouter les changements de fullscreen pour mettre à jour l'état
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -434,6 +438,7 @@ export const PlaceJukebox = ({ slug, hideInterface = false }: PlaceJukeboxProps)
   // précédente pour ne pas bloquer l'autoplay de la première chanson.
   useEffect(() => {
     lastCompletedTrackIdRef.current = null;
+    pendingPlaybackSyncRef.current = null;
   }, [slug]);
 
   const clearPreviewTimer = () => {
@@ -503,8 +508,13 @@ export const PlaceJukebox = ({ slug, hideInterface = false }: PlaceJukeboxProps)
 
     // Seuils selon la spec: normal 200ms, aggressive 600ms, hard 800ms
     if (driftAbs > 800) {
-      // Hard resync: seek direct (pour les gros décalages)
-      if (Number.isFinite(expectedPosition)) {
+      const inGrace = Date.now() - playbackSyncGraceWallRef.current < 3500;
+      // Au tout début, un faux « gros » drift est fréquent (buffer + horloge) : éviter le seek brutal.
+      if (inGrace && driftAbs < 2500) {
+        if (driftAbs > 200) {
+          correctWithPlaybackRate(driftMs);
+        }
+      } else if (Number.isFinite(expectedPosition)) {
         try {
           player.currentTime = expectedPosition;
           resetPlaybackRate();
@@ -572,8 +582,12 @@ export const PlaceJukebox = ({ slug, hideInterface = false }: PlaceJukeboxProps)
 
       // Appliquer les corrections selon les seuils de la spec
       if (driftAbs > 800) {
-        // Hard resync: seek direct
-        if (Number.isFinite(expectedPosition)) {
+        const inGrace = Date.now() - playbackSyncGraceWallRef.current < 3500;
+        if (inGrace && driftAbs < 2500) {
+          if (driftAbs > 200) {
+            correctWithPlaybackRate(driftMs);
+          }
+        } else if (Number.isFinite(expectedPosition)) {
           try {
             player.currentTime = expectedPosition;
             resetPlaybackRate();
@@ -1188,12 +1202,28 @@ export const PlaceJukebox = ({ slug, hideInterface = false }: PlaceJukeboxProps)
       });
 
       await fetchPlaylist();
+
+      if (!track) {
+        pendingPlaybackSyncRef.current = null;
+        return;
+      }
+
+      playbackStartedAtRef.current = startedAt;
+
       const player = audioRef.current;
-      if (player) {
-        // Stocker le temps de démarrage pour la synchronisation continue
-        playbackStartedAtRef.current = startedAt;
-        
-        // Calculer et définir la position initiale
+      if (!player) {
+        pendingPlaybackSyncRef.current = { trackId: track.id, startedAt };
+        return;
+      }
+
+      const onCorrectMedia =
+        player.getAttribute('data-track-id') === String(track.id) &&
+        Boolean(player.src) &&
+        player.readyState >= HTMLMediaElement.HAVE_METADATA;
+
+      if (onCorrectMedia) {
+        pendingPlaybackSyncRef.current = null;
+        markPlaybackSyncGrace();
         const offsetSeconds = Math.max(0, (Date.now() - startedAt) / 1000);
         if (Number.isFinite(offsetSeconds)) {
           try {
@@ -1203,31 +1233,15 @@ export const PlaceJukebox = ({ slug, hideInterface = false }: PlaceJukeboxProps)
             console.warn('Failed to adjust audio position', error);
           }
         }
-        
-        // Démarrer la synchronisation continue
         startAudioSync();
-        
-        // Synchroniser immédiatement si le fichier est déjà chargé
-        if (player.readyState >= HTMLMediaElement.HAVE_ENOUGH_DATA) {
+        requestAnimationFrame(() => {
           syncImmediately();
-          // Synchroniser plusieurs fois au démarrage pour réduire les saccades
-          setTimeout(syncImmediately, 100);
-          setTimeout(syncImmediately, 200);
-          setTimeout(syncImmediately, 500);
-        } else {
-          // Sinon, synchroniser dès que le fichier est prêt
-          const syncOnReady = () => {
-            player.removeEventListener('canplay', syncOnReady);
-            syncImmediately();
-            // Synchroniser plusieurs fois après le chargement
-            setTimeout(syncImmediately, 100);
-            setTimeout(syncImmediately, 200);
-            setTimeout(syncImmediately, 500);
-          };
-          player.addEventListener('canplay', syncOnReady, { once: true });
-        }
-        
+        });
         playWithAutoplaySafeguards();
+      } else {
+        pendingPlaybackSyncRef.current = { trackId: track.id, startedAt };
+        // Le seek serveur est appliqué dans l’effet `activeTrack` (beginPlayback) une fois le `src` prêt,
+        // sinon `load()` écrase la position et donne l’impression d’un redémarrage.
       }
     };
 
@@ -1287,7 +1301,7 @@ export const PlaceJukebox = ({ slug, hideInterface = false }: PlaceJukeboxProps)
     // Ne pas inclure playbackMode et isMasterDevice dans les dépendances
     // car ils sont gérés via les événements WebSocket et les refs
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slug, fetchPlaylist, playWithAutoplaySafeguards, startAudioSync, syncImmediately]);
+  }, [slug, fetchPlaylist, playWithAutoplaySafeguards, startAudioSync, syncImmediately, markPlaybackSyncGrace]);
 
   // Synchroniser avec l'état de lecture au chargement initial (même sans playback:start)
   useEffect(() => {
@@ -1315,22 +1329,35 @@ export const PlaceJukebox = ({ slug, hideInterface = false }: PlaceJukeboxProps)
 
     // Initialiser la synchronisation avec l'état du serveur
     playbackStartedAtRef.current = playbackState.started_at;
-    
-    // Calculer et définir la position initiale
-    const offsetSeconds = Math.max(0, (Date.now() - playbackState.started_at) / 1000);
-    if (Number.isFinite(offsetSeconds) && offsetSeconds >= 0) {
-      try {
-        player.currentTime = offsetSeconds;
-      } catch (error) {
-        // Ignorer les erreurs silencieusement
+
+    const dataTrack = player.getAttribute('data-track-id');
+    const canSeek =
+      dataTrack === String(playbackState.current_song_id) &&
+      player.readyState >= HTMLMediaElement.HAVE_METADATA &&
+      Boolean(player.src);
+
+    if (canSeek) {
+      markPlaybackSyncGrace();
+      const offsetSeconds = Math.max(0, (Date.now() - playbackState.started_at) / 1000);
+      if (Number.isFinite(offsetSeconds) && offsetSeconds >= 0) {
+        try {
+          player.currentTime = offsetSeconds;
+        } catch (error) {
+          // Ignorer les erreurs silencieusement
+        }
       }
+    } else {
+      pendingPlaybackSyncRef.current = {
+        trackId: playbackState.current_song_id,
+        startedAt: playbackState.started_at,
+      };
     }
 
     // Démarrer la synchronisation continue si le statut est 'playing'
     if (playbackState.status === 'playing') {
       startAudioSync();
     }
-  }, [playbackState, activeTrackId, startAudioSync]);
+  }, [playbackState, activeTrackId, startAudioSync, markPlaybackSyncGrace]);
 
   useEffect(() => {
     const player = audioRef.current;
@@ -1357,10 +1384,23 @@ export const PlaceJukebox = ({ slug, hideInterface = false }: PlaceJukeboxProps)
       });
     }
 
-    if (previewTrack) {
-      // Arrêter la synchronisation pendant le preview
+    // Si la piste préécoutée devient la tête de file, couper le preview tout de suite.
+    // Sinon le morceau continue sur previewAudio puis redémarre sur le lecteur principal → double lecture.
+    if (previewTrack && activeTrack && previewTrack.id === activeTrack.id) {
+      clearPreviewTimer();
+      if (previewAudioRef.current) {
+        previewAudioRef.current.pause();
+        previewAudioRef.current.currentTime = 0;
+        previewAudioRef.current.removeAttribute('src');
+        previewAudioRef.current.load();
+      }
+      setPreviewTrack(null);
+      previewTrackRef.current = null;
+      wasPlayingRef.current = false;
+    }
+
+    if (previewTrackRef.current) {
       stopAudioSync();
-      // Mettre à jour les refs même si on sort tôt
       previousPlaybackModeRef.current = playbackMode;
       previousIsMasterDeviceRef.current = isMasterDevice;
       previousActiveTrackIdRef.current = currentActiveTrackId;
@@ -1369,6 +1409,7 @@ export const PlaceJukebox = ({ slug, hideInterface = false }: PlaceJukeboxProps)
 
     if (!activeTrack) {
       stopAudioSync();
+      pendingPlaybackSyncRef.current = null;
       player.pause();
       player.currentTime = 0;
       player.removeAttribute('src');
@@ -1400,29 +1441,29 @@ export const PlaceJukebox = ({ slug, hideInterface = false }: PlaceJukeboxProps)
     const lastTrackId = player.getAttribute('data-track-id');
     const isSameTrack = lastTrackId === String(activeTrack.id);
 
-    // Réinitialiser le cross-fade si on change de chanson
-    if (!isSameTrack) {
-      if (isCrossFadingRef.current) {
-        isCrossFadingRef.current = false;
-        if (crossFadeTimeoutRef.current) {
-          window.clearTimeout(crossFadeTimeoutRef.current);
-          crossFadeTimeoutRef.current = null;
-        }
-        if (nextAudioRef.current) {
-          nextAudioRef.current.pause();
-          nextAudioRef.current.currentTime = 0;
-          nextAudioRef.current.volume = 0;
-          nextAudioRef.current.removeAttribute('src');
-          nextAudioRef.current.load();
-        }
-      }
-      // Toujours s'assurer que le volume principal est à 1 quand on change de chanson
-      if (player) {
-        player.volume = 1;
-      }
+    if (!isSameTrack && player) {
+      player.volume = 1;
     }
 
     if (isSameTrack) {
+      const pending = pendingPlaybackSyncRef.current;
+      if (pending && pending.trackId === activeTrack.id) {
+        pendingPlaybackSyncRef.current = null;
+        playbackStartedAtRef.current = pending.startedAt;
+        markPlaybackSyncGrace();
+        const offsetSeconds = Math.max(0, (Date.now() - pending.startedAt) / 1000);
+        if (Number.isFinite(offsetSeconds)) {
+          try {
+            player.currentTime = offsetSeconds;
+          } catch {
+            // Ignorer
+          }
+        }
+        startAudioSync();
+        requestAnimationFrame(() => {
+          syncImmediately();
+        });
+      }
       // Si le lecteur est arrivé à la fin (évènement "ended"), on ne relance PAS
       // automatiquement la lecture. On attend qu'un nouvel évènement "playback:start"
       // du serveur change effectivement la piste active.
@@ -1459,6 +1500,23 @@ export const PlaceJukebox = ({ slug, hideInterface = false }: PlaceJukeboxProps)
       if (cancelled) {
         return;
       }
+      const pending = pendingPlaybackSyncRef.current;
+      if (pending && pending.trackId === activeTrack.id) {
+        pendingPlaybackSyncRef.current = null;
+        playbackStartedAtRef.current = pending.startedAt;
+        markPlaybackSyncGrace();
+        const offsetSeconds = Math.max(0, (Date.now() - pending.startedAt) / 1000);
+        if (Number.isFinite(offsetSeconds)) {
+          try {
+            player.currentTime = offsetSeconds;
+          } catch {
+            // Ignorer
+          }
+        }
+      } else {
+        markPlaybackSyncGrace();
+      }
+
       playWithAutoplaySafeguards();
     };
 
@@ -1494,7 +1552,7 @@ export const PlaceJukebox = ({ slug, hideInterface = false }: PlaceJukeboxProps)
         player.removeEventListener('canplay', canPlayHandler);
       }
     };
-  }, [activeTrack, previewTrack, playbackMode, isMasterDevice, playWithAutoplaySafeguards, user, slug, stopAudioSync, syncImmediately]);
+  }, [activeTrack, previewTrack, playbackMode, isMasterDevice, playWithAutoplaySafeguards, user, slug, stopAudioSync, startAudioSync, syncImmediately, markPlaybackSyncGrace]);
 
   // Le useEffect principal (ligne 613) gère déjà tous les changements de mode
   // Plus besoin d'un useEffect séparé pour les logs de changement de mode
@@ -1509,17 +1567,6 @@ export const PlaceJukebox = ({ slug, hideInterface = false }: PlaceJukeboxProps)
       if (autoplayRetryTimeoutRef.current) {
         window.clearTimeout(autoplayRetryTimeoutRef.current);
         autoplayRetryTimeoutRef.current = null;
-      }
-      if (crossFadeTimeoutRef.current) {
-        window.clearTimeout(crossFadeTimeoutRef.current);
-        crossFadeTimeoutRef.current = null;
-      }
-      // Réinitialiser le cross-fade si le composant se démonte
-      isCrossFadingRef.current = false;
-      if (nextAudioRef.current) {
-        nextAudioRef.current.pause();
-        nextAudioRef.current.currentTime = 0;
-        nextAudioRef.current.volume = 0;
       }
     },
     // Ne pas inclure stopPreview dans les dépendances pour éviter les appels prématurés
@@ -1581,33 +1628,6 @@ export const PlaceJukebox = ({ slug, hideInterface = false }: PlaceJukeboxProps)
             });
           }
         }, 100);
-      }
-    }
-
-    // Si un cross-fade est en cours, arrêter proprement
-    if (isCrossFadingRef.current && nextAudioRef.current) {
-      const currentPlayer = audioRef.current;
-      const nextPlayer = nextAudioRef.current;
-      
-      if (currentPlayer && nextPlayer) {
-        // Arrêter la chanson actuelle
-        currentPlayer.pause();
-        currentPlayer.currentTime = 0;
-        currentPlayer.volume = 1; // Réinitialiser le volume
-        
-        // Arrêter aussi la prochaine chanson du cross-fade
-        // Le serveur va déclencher la nouvelle chanson via WebSocket
-        nextPlayer.pause();
-        nextPlayer.currentTime = 0;
-        nextPlayer.volume = 0;
-        nextPlayer.removeAttribute('src');
-        nextPlayer.load();
-        
-        isCrossFadingRef.current = false;
-        if (crossFadeTimeoutRef.current) {
-          window.clearTimeout(crossFadeTimeoutRef.current);
-          crossFadeTimeoutRef.current = null;
-        }
       }
     }
 
@@ -1757,178 +1777,14 @@ export const PlaceJukebox = ({ slug, hideInterface = false }: PlaceJukeboxProps)
       return;
     }
     const current = player.currentTime ?? 0;
-    const duration = player.duration ?? 0;
-    
+
     setPlayerPosition((prev) => {
       if (Math.abs(prev - current) > 0.25) {
         return current;
       }
       return prev;
     });
-
-    // Cross-fade uniquement pour les utilisateurs avec plan "pro" et si activé
-    const isPro = user?.plan === 'pro';
-    if (!isPro) {
-      return;
-    }
-    
-    // Vérifier si le cross-fade est activé dans les préférences
-    const CROSSFADE_PREFERENCE_KEY = 'jukebox_crossfade_enabled';
-    const crossFadeEnabled = localStorage.getItem(CROSSFADE_PREFERENCE_KEY);
-    // Par défaut activé si non défini (pour les utilisateurs Pro)
-    if (crossFadeEnabled === 'false') {
-      return;
-    }
-
-    // Détecter quand on approche de la fin (3 secondes avant la fin) pour commencer le cross-fade
-    // Seulement si la chanson actuelle est bien au rang 1 et qu'il y a une prochaine chanson
-    const CROSSFADE_DURATION = 3; // secondes
-    const timeRemaining = duration - current;
-    
-    // Vérifier que la chanson actuelle est bien au rang 1 et qu'il y a une prochaine chanson
-    const isRank1 = activeTrack.id === tracks[0]?.id;
-    const hasNextTrack = tracks.length > 1;
-    
-    if (
-      !isCrossFadingRef.current &&
-      timeRemaining <= CROSSFADE_DURATION &&
-      timeRemaining > 0 &&
-      hasNextTrack &&
-      isRank1 &&
-      !player.paused // Seulement si la chanson est en cours de lecture
-    ) {
-      const nextTrack = tracks[1];
-      if (nextTrack && nextTrack.id !== activeTrack.id) {
-        startCrossFade(nextTrack);
-      }
-    }
   };
-
-  const startCrossFade = useCallback((nextTrack: Track) => {
-    // Cross-fade uniquement pour les utilisateurs avec plan "pro" et si activé
-    const isPro = user?.plan === 'pro';
-    if (!isPro) {
-      return;
-    }
-    
-    // Vérifier si le cross-fade est activé dans les préférences
-    const CROSSFADE_PREFERENCE_KEY = 'jukebox_crossfade_enabled';
-    const crossFadeEnabled = localStorage.getItem(CROSSFADE_PREFERENCE_KEY);
-    // Par défaut activé si non défini (pour les utilisateurs Pro)
-    if (crossFadeEnabled === 'false') {
-      return;
-    }
-
-    const currentPlayer = audioRef.current;
-    const nextPlayer = nextAudioRef.current;
-    
-    if (!currentPlayer || !nextPlayer || isCrossFadingRef.current) {
-      return;
-    }
-
-    // Vérifier que la chanson actuelle est toujours au rang 1
-    if (activeTrack?.id !== tracks[0]?.id) {
-      return;
-    }
-
-    isCrossFadingRef.current = true;
-    const CROSSFADE_DURATION = 3000; // 3 secondes en millisecondes
-    const startTime = Date.now();
-    const startVolume = currentPlayer.volume || 1;
-
-    // Précharger la prochaine chanson
-    nextPlayer.src = nextTrack.file_path;
-    nextPlayer.volume = 0;
-    nextPlayer.currentTime = 0;
-    
-    let fadeInterval: number | null = null;
-    
-    const handleNextCanPlay = () => {
-      nextPlayer.removeEventListener('canplay', handleNextCanPlay);
-      nextPlayer.play().catch(() => {
-        isCrossFadingRef.current = false;
-        if (fadeInterval !== null) {
-          clearInterval(fadeInterval);
-        }
-      });
-    };
-
-    const startFade = () => {
-      // Animation du cross-fade
-      fadeInterval = window.setInterval(() => {
-        // Vérifier que la chanson actuelle est toujours la même
-        if (currentPlayer.getAttribute('data-track-id') !== String(activeTrack?.id)) {
-          // La chanson a changé, arrêter le cross-fade
-          if (fadeInterval !== null) {
-            clearInterval(fadeInterval);
-            fadeInterval = null;
-          }
-          isCrossFadingRef.current = false;
-          if (nextPlayer) {
-            nextPlayer.pause();
-            nextPlayer.currentTime = 0;
-            nextPlayer.volume = 0;
-          }
-          if (currentPlayer) {
-            currentPlayer.volume = 1;
-          }
-          return;
-        }
-
-        const elapsed = Date.now() - startTime;
-        const progress = Math.min(elapsed / CROSSFADE_DURATION, 1);
-
-        // Fade out de la chanson actuelle
-        if (currentPlayer && !currentPlayer.paused && currentPlayer.getAttribute('data-track-id') === String(activeTrack?.id)) {
-          currentPlayer.volume = Math.max(0, startVolume * (1 - progress));
-        }
-        
-        // Fade in de la prochaine chanson
-        if (nextPlayer && !nextPlayer.paused) {
-          nextPlayer.volume = Math.min(1, progress);
-        }
-
-        if (progress >= 1) {
-          if (fadeInterval !== null) {
-            clearInterval(fadeInterval);
-            fadeInterval = null;
-          }
-          // Le cross-fade est terminé, la prochaine chanson prend le relais
-          // On attend que handleEnded soit appelé pour finaliser la transition
-        }
-      }, 16); // ~60fps
-    };
-
-    if (nextPlayer.readyState >= HTMLMediaElement.HAVE_ENOUGH_DATA) {
-      nextPlayer.play().catch(() => {
-        isCrossFadingRef.current = false;
-        if (fadeInterval !== null) {
-          clearInterval(fadeInterval);
-        }
-      });
-      startFade();
-    } else {
-      const handleCanPlayAndStart = () => {
-        nextPlayer.removeEventListener('canplay', handleCanPlayAndStart);
-        nextPlayer.play().catch(() => {
-          isCrossFadingRef.current = false;
-          if (fadeInterval !== null) {
-            clearInterval(fadeInterval);
-          }
-        });
-        startFade();
-      };
-      nextPlayer.addEventListener('canplay', handleCanPlayAndStart);
-      nextPlayer.load();
-    }
-
-    // Nettoyer l'intervalle si nécessaire
-    crossFadeTimeoutRef.current = window.setTimeout(() => {
-      if (fadeInterval !== null) {
-        clearInterval(fadeInterval);
-      }
-      }, CROSSFADE_DURATION + 100);
-  }, [tracks, activeTrack, user]);
 
   const displayedTracks = showGoldenOnly ? tracks.filter((track) => track.is_golden) : tracks;
   const hasResults = displayedTracks.length > 0;
@@ -2218,10 +2074,6 @@ export const PlaceJukebox = ({ slug, hideInterface = false }: PlaceJukeboxProps)
         onPause={handleAudioPause}
         onTimeUpdate={handleAudioTimeUpdate}
         onEnded={handleEnded}
-        className="hidden"
-      />
-      <audio
-        ref={nextAudioRef}
         className="hidden"
       />
       <audio ref={previewAudioRef} onEnded={handlePreviewEnded} className="hidden" />

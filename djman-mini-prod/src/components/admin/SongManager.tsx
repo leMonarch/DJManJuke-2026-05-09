@@ -5,8 +5,6 @@ import type { Track } from '../../types/music';
 import { PLAYLIST_REFRESH_EVENT } from '../../constants/jukebox';
 import { songAdminService, type SongPayload } from '../../services/songAdminService';
 import { jukeboxLibraryService, type CatalogSong } from '../../services/jukeboxLibraryService';
-import { useAuth } from '../../context/AuthContext';
-
 type SongManagerProps = {
   slug: string;
 };
@@ -35,11 +33,8 @@ const EMPTY_FORM: FormState = {
   recordedAt: '',
 };
 
-const CROSSFADE_PREFERENCE_KEY = 'jukebox_crossfade_enabled';
-
 export const SongManager = ({ slug }: SongManagerProps) => {
   const { t } = useLanguage();
-  const { user } = useAuth();
   const [songs, setSongs] = useState<Track[]>([]);
   const [catalog, setCatalog] = useState<CatalogSong[]>([]);
   const [isLoadingSongs, setIsLoadingSongs] = useState<boolean>(false);
@@ -53,15 +48,6 @@ export const SongManager = ({ slug }: SongManagerProps) => {
   const [songSearchTerm, setSongSearchTerm] = useState<string>('');
   const [catalogSearchInput, setCatalogSearchInput] = useState<string>('');
   const [catalogSearchTerm, setCatalogSearchTerm] = useState<string>('');
-  const [crossFadeEnabled, setCrossFadeEnabled] = useState<boolean>(() => {
-    // Charger la préférence depuis localStorage, par défaut true pour les utilisateurs Pro
-    if (typeof window !== 'undefined') {
-      const stored = localStorage.getItem(CROSSFADE_PREFERENCE_KEY);
-      return stored !== null ? stored === 'true' : true; // Par défaut activé
-    }
-    return true;
-  });
-
   const resetStatus = useCallback(() => {
     setError(null);
     setSuccess(null);
@@ -257,39 +243,8 @@ export const SongManager = ({ slug }: SongManagerProps) => {
     }
   };
 
-  const handleCrossFadeToggle = useCallback((enabled: boolean) => {
-    setCrossFadeEnabled(enabled);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(CROSSFADE_PREFERENCE_KEY, String(enabled));
-    }
-    toast.success(enabled ? t('songs.crossfadeEnabled') : t('songs.crossfadeDisabled'));
-  }, []);
-
-  const isPro = user?.plan === 'pro';
-
   return (
     <div className="space-y-4 sm:space-y-6">
-      {isPro ? (
-        <div className="rounded-xl border border-white/10 bg-white/5 p-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h4 className="text-sm font-semibold text-white sm:text-base">{t('songs.crossfade')}</h4>
-              <p className="mt-1 text-xs text-white/60 sm:text-sm">
-                {t('songs.crossfadeDesc')}
-              </p>
-            </div>
-            <label className="relative inline-flex cursor-pointer items-center min-h-[44px]">
-              <input
-                type="checkbox"
-                checked={crossFadeEnabled}
-                onChange={(e) => handleCrossFadeToggle(e.target.checked)}
-                className="peer sr-only"
-              />
-              <div className="peer h-6 w-11 rounded-full bg-white/20 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-white/30 after:bg-white after:transition-all after:content-[''] peer-checked:bg-blue-500 peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-blue-300"></div>
-            </label>
-          </div>
-        </div>
-      ) : null}
       <header className="space-y-1">
         <h3 className="text-base font-semibold text-white sm:text-lg">{formTitle}</h3>
         <p className="text-sm text-white/60">

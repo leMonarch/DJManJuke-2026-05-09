@@ -162,10 +162,6 @@ const translations: Record<Language, Record<string, string>> = {
     'profile.incorrectPassword': 'Mot de passe incorrect',
     
     // Song Manager
-    'songs.crossfade': 'Cross-fade',
-    'songs.crossfadeDesc': 'Transitions fluides entre les chansons (plan Pro uniquement)',
-    'songs.crossfadeEnabled': 'Cross-fade activé',
-    'songs.crossfadeDisabled': 'Cross-fade désactivé',
     'songs.editSong': 'Modifier la chanson',
     'songs.addSong': 'Ajouter une chanson',
     'songs.formDesc': 'Les fichiers audio sont obligatoires lors de la création. En modification, laissez vide pour conserver les médias actuels.',
@@ -510,10 +506,6 @@ const translations: Record<Language, Record<string, string>> = {
     'profile.incorrectPassword': 'Incorrect password',
     
     // Song Manager
-    'songs.crossfade': 'Cross-fade',
-    'songs.crossfadeDesc': 'Smooth transitions between songs (Pro plan only)',
-    'songs.crossfadeEnabled': 'Cross-fade enabled',
-    'songs.crossfadeDisabled': 'Cross-fade disabled',
     'songs.editSong': 'Edit Song',
     'songs.addSong': 'Add Song',
     'songs.formDesc': 'Audio files are required when creating. When editing, leave empty to keep current media.',
