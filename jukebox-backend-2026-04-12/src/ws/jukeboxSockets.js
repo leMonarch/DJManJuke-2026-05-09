@@ -212,12 +212,39 @@ const registerJukeboxSockets = (httpServer) => {
       }
 
       const playlist = await getJukeboxService().getPlaylist(slug);
-      const activeTrack = playlist?.length ? playlist[0] : null;
+
+      let activeTrackId = null;
+      let playback_started_at = null;
+      let playback_status = 'paused';
+
+      try {
+        const jukebox = await getJukeboxService().getJukeboxBySlug(slug);
+        const currentSongId =
+          jukebox.current_song_id != null ? Number(jukebox.current_song_id) : null;
+        playback_started_at = jukebox.playback_started_at ?? null;
+        playback_status = jukebox.playback_status ?? 'paused';
+
+        // eslint-disable-next-line no-console
+        console.log('[Socket.io join]', {
+          slug,
+          current_song_id: currentSongId,
+          playback_status,
+        });
+
+        const idle = currentSongId == null || playback_status === 'idle';
+        activeTrackId = idle ? null : currentSongId;
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[Socket.io join] playback state fallback', slug, err.message);
+      }
+
       socket.emit('state:full', {
-        activeTrackId: activeTrack?.id ?? null,
+        activeTrackId,
         playlist,
         playbackMode: playback_mode,
         isMasterDevice: isMaster,
+        playback_started_at,
+        playback_status,
       });
     });
 

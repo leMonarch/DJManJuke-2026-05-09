@@ -4,13 +4,29 @@ const getPlaylist = async (req, res, next) => {
   try {
     const playlist = await jukeboxService.getPlaylist(req.params.slug);
     const jukebox = await jukeboxService.getJukeboxBySlug(req.params.slug);
-    // Retourner l'état de lecture pour la synchronisation
-    res.json({ 
+
+    let current_song_id = jukebox.current_song_id ?? null;
+    let started_at = jukebox.playback_started_at ?? null;
+    let status = jukebox.playback_status ?? 'paused';
+
+    const currentId =
+      current_song_id != null ? Number(current_song_id) : null;
+    const inQueue =
+      currentId != null &&
+      playlist.some((track) => Number(track.id) === currentId);
+
+    if (currentId != null && !inQueue) {
+      current_song_id = null;
+      started_at = null;
+      status = 'idle';
+    }
+
+    res.json({
       playlist,
       playbackState: {
-        current_song_id: jukebox.current_song_id ?? null,
-        started_at: jukebox.playback_started_at ?? null,
-        status: jukebox.playback_status ?? 'paused',
+        current_song_id,
+        started_at,
+        status,
       },
     });
   } catch (error) {
