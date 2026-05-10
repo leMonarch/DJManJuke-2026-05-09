@@ -9,6 +9,7 @@ const clientsByJukebox = new Map();
 const emitPlaybackStart = ({ slug, track, startedAt }) => {
   if (!jukeboxNamespaceInstance) return;
   jukeboxNamespaceInstance.to(slug).emit('playback:start', {
+    song_id: track?.id ?? null,
     track,
     startedAt,
   });

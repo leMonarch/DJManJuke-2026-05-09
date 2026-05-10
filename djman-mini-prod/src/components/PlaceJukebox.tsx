@@ -1173,51 +1173,73 @@ export const PlaceJukebox = ({ slug, hideInterface = false }: PlaceJukeboxProps)
     
     socketRef.current = jukeboxNamespace;
 
-    const handlePlaybackStart = async ({ track, startedAt }: { track: Track | null; startedAt: number }) => {
+    const handlePlaybackStart = async ({
+      track,
+      startedAt,
+      song_id,
+    }: {
+      track: Track | null;
+      startedAt: number;
+      song_id?: number | null;
+    }) => {
       // Utiliser les refs pour avoir les valeurs les plus récentes
       const currentPlaybackMode = playbackModeRef.current;
       const currentIsMasterDevice = isMasterDeviceRef.current;
+
+      const serverSongId =
+        song_id != null && Number.isFinite(Number(song_id))
+          ? Number(song_id)
+          : track?.id != null
+            ? Number(track.id)
+            : null;
 
       // Debug: log chaque évènement de démarrage serveur
       // eslint-disable-next-line no-console
       console.log('[playback:start] reçu', {
         slug,
+        song_id: serverSongId,
         trackId: track?.id ?? null,
         lastCompletedTrackId: lastCompletedTrackIdRef.current,
         startedAt,
       });
       // Si le serveur demande de rejouer exactement la dernière piste complétée,
       // on ignore cette demande pour éviter les boucles.
-      if (track && lastCompletedTrackIdRef.current != null && track.id === lastCompletedTrackIdRef.current) {
+      if (
+        serverSongId != null &&
+        lastCompletedTrackIdRef.current != null &&
+        serverSongId === lastCompletedTrackIdRef.current
+      ) {
         return;
       }
 
       // En mode public, tous les devices (maître et clients) jouent l'audio de manière synchronisée
       // eslint-disable-next-line no-console
       console.log('[PLAYBACK_START] ✅ Lecture démarrée', {
+        songId: serverSongId,
         trackId: track?.id,
         playbackMode: currentPlaybackMode,
         isMasterDevice: currentIsMasterDevice,
         startedAt,
       });
 
+      // Horodatage serveur prioritaire dès réception (avant le refetch playlist).
+      playbackStartedAtRef.current = startedAt;
+
       await fetchPlaylist();
 
-      if (!track) {
+      if (!track || serverSongId == null) {
         pendingPlaybackSyncRef.current = null;
         return;
       }
 
-      playbackStartedAtRef.current = startedAt;
-
       const player = audioRef.current;
       if (!player) {
-        pendingPlaybackSyncRef.current = { trackId: track.id, startedAt };
+        pendingPlaybackSyncRef.current = { trackId: serverSongId, startedAt };
         return;
       }
 
       const onCorrectMedia =
-        player.getAttribute('data-track-id') === String(track.id) &&
+        player.getAttribute('data-track-id') === String(serverSongId) &&
         Boolean(player.src) &&
         player.readyState >= HTMLMediaElement.HAVE_METADATA;
 
@@ -1239,7 +1261,7 @@ export const PlaceJukebox = ({ slug, hideInterface = false }: PlaceJukeboxProps)
         });
         playWithAutoplaySafeguards();
       } else {
-        pendingPlaybackSyncRef.current = { trackId: track.id, startedAt };
+        pendingPlaybackSyncRef.current = { trackId: serverSongId, startedAt };
         // Le seek serveur est appliqué dans l’effet `activeTrack` (beginPlayback) une fois le `src` prêt,
         // sinon `load()` écrase la position et donne l’impression d’un redémarrage.
       }
@@ -1314,10 +1336,8 @@ export const PlaceJukebox = ({ slug, hideInterface = false }: PlaceJukeboxProps)
       return;
     }
 
-    // Vérifier si la chanson active correspond à celle en cours de lecture
-    if (activeTrackId !== playbackState.current_song_id) {
-      return;
-    }
+    // Ne pas bloquer sur activeTrackId : l'état serveur (playbackState) peut précéder
+    // le re-render de la queue ; pendingPlaybackSyncRef / beginPlayback rattrapent le média.
 
     // Vérifier si on a déjà reçu started_at via WebSocket (éviter les doublons)
     if (playbackStartedAtRef.current === playbackState.started_at) {
@@ -1353,8 +1373,8 @@ export const PlaceJukebox = ({ slug, hideInterface = false }: PlaceJukeboxProps)
       };
     }
 
-    // Démarrer la synchronisation continue si le statut est 'playing'
-    if (playbackState.status === 'playing') {
+    // Démarrer la synchro continue seulement si le média correspond (évite de corriger le mauvais élément audio).
+    if (playbackState.status === 'playing' && canSeek) {
       startAudioSync();
     }
   }, [playbackState, activeTrackId, startAudioSync, markPlaybackSyncGrace]);
